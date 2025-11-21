@@ -2,7 +2,8 @@ from PySide2.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                                QTableWidget, QTableWidgetItem, QHeaderView, 
                                QComboBox, QTextEdit, QGroupBox, QFormLayout,
-                               QMessageBox, QProgressBar)
+                               QMessageBox, QProgressBar, QAbstractItemView,
+                               QInputDialog)
 from PySide2.QtCore import Signal, Qt
 from PySide2.QtGui import QIcon
 from datetime import datetime
@@ -11,7 +12,8 @@ from .styles import DARK_STYLESHEET
 class VastGui(QMainWindow):
     # Signals to Controller
     search_requested = Signal(str, float, float) # gpu, price, disk
-    rent_requested = Signal(str, str, float, str, str) # id, image, disk, onstart, env
+    rent_requested = Signal(list, str, float, str, str) # ids, image, disk, onstart, env
+    set_api_key_requested = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -19,7 +21,7 @@ class VastGui(QMainWindow):
         self.resize(1200, 800)
         self.setStyleSheet(DARK_STYLESHEET)
         
-        self.selected_machine_id = None
+        self.selected_machine_ids = []
         self.init_ui()
         self.append_log("Sistema iniciado. Listo para buscar máquinas.")
 
@@ -37,6 +39,9 @@ class VastGui(QMainWindow):
         self.status_label = QLabel("Verificando conexión...")
         self.status_label.setStyleSheet("background-color: #333; color: #aaa; padding: 5px; border-radius: 3px; font-weight: bold;")
         self.status_label.setAlignment(Qt.AlignCenter)
+        # Make status label clickable
+        self.status_label.setCursor(Qt.PointingHandCursor)
+        self.status_label.mousePressEvent = self.on_status_clicked
         left_layout.addWidget(self.status_label)
 
         # 1. Filtros de Búsqueda
@@ -115,7 +120,7 @@ class VastGui(QMainWindow):
         self.table.setHorizontalHeaderLabels(["ID", "GPU", "Cant.", "Precio/Hr", "DLPerf", "Fiabilidad"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setSortingEnabled(True)  # Enable sorting
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
 
@@ -139,19 +144,31 @@ class VastGui(QMainWindow):
         sb.setValue(sb.maximum())
 
     def on_selection_changed(self):
-        selected_items = self.table.selectedItems()
-        if selected_items:
-            row = selected_items[0].row()
-            machine_id = self.table.item(row, 0).text()
-            gpu = self.table.item(row, 1).text()
-            price = self.table.item(row, 3).text()
+        selected_rows = set()
+        for item in self.table.selectedItems():
+            selected_rows.add(item.row())
+        
+        self.selected_machine_ids = []
+        if selected_rows:
+            for row in selected_rows:
+                m_id = self.table.item(row, 0).text()
+                self.selected_machine_ids.append(m_id)
             
-            self.selected_machine_id = machine_id
-            self.result_label.setText(f"Seleccionado: ID {machine_id} ({gpu} a ${price}/hr)")
+            count = len(self.selected_machine_ids)
+            if count == 1:
+                # Mostrar detalle del único seleccionado
+                row = list(selected_rows)[0]
+                gpu = self.table.item(row, 1).text()
+                price = self.table.item(row, 3).text()
+                self.result_label.setText(f"Seleccionado: ID {self.selected_machine_ids[0]} ({gpu} a ${price}/hr)")
+                self.rent_btn.setText(f"ALQUILAR ID {self.selected_machine_ids[0]}")
+            else:
+                self.result_label.setText(f"Seleccionados: {count} máquinas")
+                self.rent_btn.setText(f"ALQUILAR {count} MÁQUINAS")
+            
             self.rent_btn.setEnabled(True)
-            self.rent_btn.setText(f"ALQUILAR ID {machine_id}")
         else:
-            self.selected_machine_id = None
+            self.selected_machine_ids = []
             self.rent_btn.setEnabled(False)
             self.rent_btn.setText("ALQUILAR Y RENDERIZAR")
 
@@ -165,7 +182,7 @@ class VastGui(QMainWindow):
             QMessageBox.warning(self, "Error", "El precio y el disco deben ser números válidos.")
 
     def on_rent_clicked(self):
-        if not self.selected_machine_id:
+        if not self.selected_machine_ids:
             return
 
         image = self.image_input.text()
@@ -173,9 +190,12 @@ class VastGui(QMainWindow):
             QMessageBox.warning(self, "Falta Imagen", "Debes especificar una imagen de Docker.")
             return
 
+        count = len(self.selected_machine_ids)
+        msg = f"¿Estás seguro de alquilar {count} máquina(s)?\nIDs: {', '.join(self.selected_machine_ids)}\nEsto comenzará a cobrar créditos de tu cuenta Vast.ai."
+
         confirm = QMessageBox.question(
             self, "Confirmar Alquiler", 
-            f"¿Estás seguro de alquilar la máquina {self.selected_machine_id}?\nEsto comenzará a cobrar créditos de tu cuenta Vast.ai.",
+            msg,
             QMessageBox.Yes | QMessageBox.No
         )
         
@@ -184,7 +204,7 @@ class VastGui(QMainWindow):
                 disk = float(self.disk_input.text())
             except: 
                 disk = 10.0
-            self.rent_requested.emit(self.selected_machine_id, image, disk, self.onstart_input.text(), self.args_input.text())
+            self.rent_requested.emit(self.selected_machine_ids, image, disk, self.onstart_input.text(), self.args_input.text())
 
     def set_loading(self, loading):
         if loading:
@@ -195,7 +215,7 @@ class VastGui(QMainWindow):
             self.table.setSortingEnabled(False) # Disable sorting while updating
         else:
             self.search_btn.setEnabled(True)
-            if self.selected_machine_id:
+            if self.selected_machine_ids:
                 self.rent_btn.setEnabled(True)
             self.progress.hide()
             self.table.setSortingEnabled(True)
@@ -231,8 +251,13 @@ class VastGui(QMainWindow):
             self.status_label.setText(f"🟢 Conectado: {email} | Crédito: ${balance:.2f}")
             self.status_label.setStyleSheet("background-color: #1b5e20; color: #fff; padding: 5px; border-radius: 3px; font-weight: bold;")
         else:
-            self.status_label.setText("🔴 Desconectado (API Key no config)")
+            self.status_label.setText("🔴 Desconectado (Click para configurar API Key)")
             self.status_label.setStyleSheet("background-color: #b71c1c; color: #fff; padding: 5px; border-radius: 3px; font-weight: bold;")
+
+    def on_status_clicked(self, event):
+        text, ok = QInputDialog.getText(self, "Configurar API Key", "Introduce tu Vast.ai API Key:")
+        if ok and text:
+            self.set_api_key_requested.emit(text.strip())
 
 class SortableTableWidgetItem(QTableWidgetItem):
     def __lt__(self, other):

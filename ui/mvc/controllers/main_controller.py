@@ -11,6 +11,7 @@ class MainController(QObject):
         # Conectar señales de la vista
         self.view.search_requested.connect(self.handle_search)
         self.view.rent_requested.connect(self.handle_rent)
+        self.view.set_api_key_requested.connect(self.handle_set_api_key)
 
         # Verificar conexión al inicio
         self.check_connection()
@@ -42,13 +43,13 @@ class MainController(QObject):
         self.worker.finished.connect(lambda: self.view.set_loading(False))
         self.worker.start()
 
-    def handle_rent(self, machine_id, image, disk, onstart, env):
+    def handle_rent(self, machine_ids, image, disk, onstart, env):
         self.ensure_worker_stopped()
         self.view.set_loading(True)
         
         self.worker = VastWorker(
             mode='rent', 
-            id=machine_id, 
+            ids=machine_ids, 
             image=image, 
             disk=disk, 
             onstart=onstart,
@@ -61,8 +62,9 @@ class MainController(QObject):
         self.worker.start()
 
     def on_rent_finished(self, status):
-        if status in ["SUCCESS", "MOCK_SUCCESS"]:
-            self.view.show_success(f"Máquina desplegada correctamente.\nRevisa la consola o el dashboard web.")
+        if status.startswith("SUCCESS"):
+            count = status.split(":")[1] if ":" in status else "1"
+            self.view.show_success(f"{count} Máquina(s) desplegada(s) correctamente.\nRevisa la consola o el dashboard web.")
 
     def check_connection(self):
         self.ensure_worker_stopped()
@@ -76,3 +78,18 @@ class MainController(QObject):
             self.view.update_status(True, email, float(balance))
         else:
             self.view.update_status(False)
+
+    def handle_set_api_key(self, api_key):
+        self.ensure_worker_stopped()
+        self.view.append_log("[*] Configurando API Key...")
+        self.worker = VastWorker(mode='set_api_key', api_key=api_key)
+        self.worker.finished_action.connect(self.on_api_key_set)
+        self.worker.start()
+
+    def on_api_key_set(self, result):
+        if result == "SUCCESS":
+            self.view.append_log("[+] API Key configurada. Verificando conexión...")
+            self.check_connection()
+        else:
+            self.view.append_log(f"[-] Error configurando API Key: {result}")
+            self.view.show_error("No se pudo configurar la API Key. Revisa el log.")

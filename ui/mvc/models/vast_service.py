@@ -14,7 +14,6 @@ class VastWorker(QThread):
         super().__init__()
         self.mode = mode  # 'search' o 'rent'
         self.kwargs = kwargs
-        self.use_mock = False
 
     def run(self):
         if self.mode == 'search':
@@ -23,6 +22,25 @@ class VastWorker(QThread):
             self.rent_instance()
         elif self.mode == 'check_connection':
             self.check_connection_status()
+        elif self.mode == 'set_api_key':
+            self.set_api_key()
+
+    def set_api_key(self):
+        api_key = self.kwargs.get('api_key')
+        if not api_key:
+            self.finished_action.emit("FAILED: No API Key provided")
+            return
+
+        try:
+            # vastai set api-key <key>
+            cmd = f"vastai set api-key {api_key}"
+            # No usamos check_output porque no devuelve JSON, solo éxito/error
+            subprocess.check_call(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.finished_action.emit("SUCCESS")
+        except subprocess.CalledProcessError:
+            self.finished_action.emit("FAILED: Command execution failed")
+        except Exception as e:
+            self.finished_action.emit(f"FAILED: {str(e)}")
 
     def check_vast_installed(self):
         """Verifica si vastai está en el PATH"""
@@ -46,30 +64,10 @@ class VastWorker(QThread):
         self.log_message.emit(f"[*] Buscando ofertas con query: {query}")
 
         if not self.check_vast_installed():
-            self.log_message.emit("[!] Vast.ai CLI no detectada o no configurada. Usando MOCK DATA.")
-            self.use_mock = True
-        
-        if self.use_mock:
-            # Generar datos falsos para demostración
-            self.msleep(1000) # Simular delay de red
-            mock_results = []
-            gpu_types = [gpu_name] if gpu_name != "Cualquiera" else ["RTX 4090", "RTX 3090", "A100", "A6000"]
-            for i in range(15):
-                g = random.choice(gpu_types)
-                price = round(random.uniform(0.2, 2.5), 3)
-                mock_results.append({
-                    "id": random.randint(1000000, 9999999),
-                    "gpu_name": g,
-                    "num_gpus": random.randint(1, 4),
-                    "dph_total": price,
-                    "dlperf": round(random.uniform(15, 100), 1),
-                    "reliability2": round(random.uniform(0.8, 1.0), 2),
-                    "inet_down": round(random.uniform(100, 1000), 1)
-                })
-            self.data_ready.emit(mock_results)
-            self.log_message.emit(f"[+] Búsqueda completada (Mock). {len(mock_results)} máquinas encontradas.")
+            self.log_message.emit("[!] Vast.ai CLI no detectada. Por favor instala vastai.")
+            self.error_occurred.emit("Vast.ai CLI no encontrada")
             return
-
+        
         # Ejecución Real
         try:
             # shell=True para Windows
@@ -78,53 +76,56 @@ class VastWorker(QThread):
             result = subprocess.check_output(cmd, shell=True).decode('utf-8')
             data = json.loads(result)
             self.data_ready.emit(data)
-            self.log_message.emit(f"[+] Búsqueda completada (DATOS REALES). {len(data)} máquinas encontradas.")
+            self.log_message.emit(f"[+] Búsqueda completada. {len(data)} máquinas encontradas.")
         except Exception as e:
             self.error_occurred.emit(f"Error ejecutando vastai search: {str(e)}")
 
     def rent_instance(self):
-        instance_id = self.kwargs.get('id')
+        # Ahora esperamos una lista de IDs
+        instance_ids = self.kwargs.get('ids', [])
+        if not isinstance(instance_ids, list):
+             instance_ids = [instance_ids]
+
         image = self.kwargs.get('image')
         disk = self.kwargs.get('disk')
         onstart = self.kwargs.get('onstart')
+        env_vars = self.kwargs.get('env')
 
-        self.log_message.emit(f"[*] Intentando alquilar ID: {instance_id} con imagen: {image}...")
-
-        if self.use_mock or not self.check_vast_installed():
-            self.msleep(2000)
-            self.log_message.emit(f"[MOCK] Instancia {instance_id} alquilada exitosamente.")
-            self.log_message.emit(f"[MOCK] Ejecutando script on-start: {onstart}")
-            self.finished_action.emit("MOCK_SUCCESS")
+        if not self.check_vast_installed():
+            self.error_occurred.emit("Vast.ai CLI no encontrada")
             return
 
-        # Ejecución Real
-        try:
-            # Comando: vastai create instance <id> --image <image> --disk <disk> --onstart <cmd> --env <env>
-            # Usamos string command con shell=True para evitar problemas de parsing de argumentos en Windows
-            cmd_str = f"vastai create instance {instance_id} --image {image} --disk {disk}"
-            
-            env_vars = self.kwargs.get('env')
-            if env_vars:
-                # Asumimos que el usuario ya pone las comillas si son necesarias, o lo envolvemos
-                # El usuario dijo: --env "-e VAR=VAL ..."
-                # Si el usuario escribe: -e VAR=VAL
-                # Nosotros deberíamos poner: --env "-e VAR=VAL"
-                cmd_str += f" --env \"{env_vars}\""
+        success_count = 0
+        
+        for instance_id in instance_ids:
+            self.log_message.emit(f"[*] Intentando alquilar ID: {instance_id} con imagen: {image}...")
 
-            if onstart:
-                cmd_str += f" --onstart \"{onstart}\""
-
-            self.log_message.emit(f"[*] Ejecutando: {cmd_str}")
-            result = subprocess.check_output(cmd_str, shell=True).decode('utf-8')
-            
-            if "success" in result.lower() or "id" in result.lower():
-                self.log_message.emit(f"[+] Instancia creada. Respuesta: {result}")
-                self.finished_action.emit("SUCCESS")
-            else:
-                self.error_occurred.emit(f"Respuesta inesperada: {result}")
+            try:
+                # Comando: vastai create instance <id> --image <image> --disk <disk> --onstart <cmd> --env <env>
+                cmd_str = f"vastai create instance {instance_id} --image {image} --disk {disk}"
                 
-        except Exception as e:
-            self.error_occurred.emit(f"Error al alquilar: {str(e)}")
+                if env_vars:
+                    cmd_str += f" --env \"{env_vars}\""
+
+                if onstart:
+                    cmd_str += f" --onstart \"{onstart}\""
+
+                self.log_message.emit(f"[*] Ejecutando: {cmd_str}")
+                result = subprocess.check_output(cmd_str, shell=True).decode('utf-8')
+                
+                if "success" in result.lower() or "id" in result.lower():
+                    self.log_message.emit(f"[+] Instancia {instance_id} creada. Respuesta: {result}")
+                    success_count += 1
+                else:
+                    self.error_occurred.emit(f"Respuesta inesperada para {instance_id}: {result}")
+                    
+            except Exception as e:
+                self.error_occurred.emit(f"Error al alquilar {instance_id}: {str(e)}")
+        
+        if success_count > 0:
+            self.finished_action.emit(f"SUCCESS:{success_count}")
+        else:
+            self.finished_action.emit("FAILED")
 
     def check_connection_status(self):
         if not self.check_vast_installed():
