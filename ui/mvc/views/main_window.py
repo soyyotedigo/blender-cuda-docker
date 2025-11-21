@@ -3,7 +3,7 @@ from PySide2.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QTableWidget, QTableWidgetItem, QHeaderView, 
                                QComboBox, QTextEdit, QGroupBox, QFormLayout,
                                QMessageBox, QProgressBar)
-from PySide2.QtCore import Signal
+from PySide2.QtCore import Signal, Qt
 from PySide2.QtGui import QIcon
 from datetime import datetime
 from .styles import DARK_STYLESHEET
@@ -11,7 +11,7 @@ from .styles import DARK_STYLESHEET
 class VastGui(QMainWindow):
     # Signals to Controller
     search_requested = Signal(str, float, float) # gpu, price, disk
-    rent_requested = Signal(str, str, float, str) # id, image, disk, onstart
+    rent_requested = Signal(str, str, float, str, str) # id, image, disk, onstart, env
 
     def __init__(self):
         super().__init__()
@@ -32,6 +32,12 @@ class VastGui(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_panel.setFixedWidth(400)
+
+        # 0. Estado de Conexión
+        self.status_label = QLabel("Verificando conexión...")
+        self.status_label.setStyleSheet("background-color: #333; color: #aaa; padding: 5px; border-radius: 3px; font-weight: bold;")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        left_layout.addWidget(self.status_label)
 
         # 1. Filtros de Búsqueda
         filter_group = QGroupBox("1. Configuración de Búsqueda")
@@ -61,19 +67,19 @@ class VastGui(QMainWindow):
         render_group = QGroupBox("3. Configuración del Render")
         render_layout = QFormLayout()
 
-        self.image_input = QLineEdit("pytorch/pytorch")
+        self.image_input = QLineEdit("danicol/blender-render:4.5.2")
         self.image_input.setPlaceholderText("Ej: blender/blender:latest")
         self.image_input.setToolTip("Imagen Docker a utilizar")
 
-        self.onstart_input = QLineEdit("touch /root/started")
+        self.onstart_input = QLineEdit("onstart.sh")
         self.onstart_input.setPlaceholderText("Bash script on-start")
         
-        self.args_input = QLineEdit("-p 8080:8080")
-        self.args_input.setPlaceholderText("Argumentos docker run")
+        self.args_input = QLineEdit("-e RCLONE_CONF_B64=... -e SCENE_FILE=...")
+        self.args_input.setPlaceholderText("Environment Variables (--env)")
 
         render_layout.addRow("Docker Image:", self.image_input)
         render_layout.addRow("On-Start Cmd:", self.onstart_input)
-        render_layout.addRow("Launch Args:", self.args_input)
+        render_layout.addRow("Environment:", self.args_input)
 
         self.rent_btn = QPushButton("ALQUILAR Y RENDERIZAR")
         self.rent_btn.setObjectName("rentButton")
@@ -110,6 +116,7 @@ class VastGui(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setSortingEnabled(True)  # Enable sorting
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
 
         right_layout.addWidget(self.result_label)
@@ -177,7 +184,7 @@ class VastGui(QMainWindow):
                 disk = float(self.disk_input.text())
             except: 
                 disk = 10.0
-            self.rent_requested.emit(self.selected_machine_id, image, disk, self.onstart_input.text())
+            self.rent_requested.emit(self.selected_machine_id, image, disk, self.onstart_input.text(), self.args_input.text())
 
     def set_loading(self, loading):
         if loading:
@@ -185,13 +192,16 @@ class VastGui(QMainWindow):
             self.rent_btn.setEnabled(False)
             self.progress.setRange(0, 0)
             self.progress.show()
+            self.table.setSortingEnabled(False) # Disable sorting while updating
         else:
             self.search_btn.setEnabled(True)
             if self.selected_machine_id:
                 self.rent_btn.setEnabled(True)
             self.progress.hide()
+            self.table.setSortingEnabled(True)
 
     def populate_table(self, data):
+        self.table.setSortingEnabled(False) # Disable sorting while populating
         self.table.setRowCount(len(data))
         for row_idx, machine in enumerate(data):
             m_id = str(machine.get('id', 'N/A'))
@@ -202,15 +212,34 @@ class VastGui(QMainWindow):
             rel = machine.get('reliability2', 0)
             m_rel = f"{rel*100:.1f}%" if rel else "N/A"
 
-            self.table.setItem(row_idx, 0, QTableWidgetItem(m_id))
+            self.table.setItem(row_idx, 0, SortableTableWidgetItem(m_id))
             self.table.setItem(row_idx, 1, QTableWidgetItem(m_gpu))
-            self.table.setItem(row_idx, 2, QTableWidgetItem(m_count))
-            self.table.setItem(row_idx, 3, QTableWidgetItem(m_price))
-            self.table.setItem(row_idx, 4, QTableWidgetItem(m_dlperf))
-            self.table.setItem(row_idx, 5, QTableWidgetItem(m_rel))
+            self.table.setItem(row_idx, 2, SortableTableWidgetItem(m_count))
+            self.table.setItem(row_idx, 3, SortableTableWidgetItem(m_price))
+            self.table.setItem(row_idx, 4, SortableTableWidgetItem(m_dlperf))
+            self.table.setItem(row_idx, 5, SortableTableWidgetItem(m_rel))
+        self.table.setSortingEnabled(True)
 
     def show_success(self, message):
         QMessageBox.information(self, "Éxito", message)
 
     def show_error(self, message):
         QMessageBox.warning(self, "Error", message)
+
+    def update_status(self, connected, email=None, balance=None):
+        if connected:
+            self.status_label.setText(f"🟢 Conectado: {email} | Crédito: ${balance:.2f}")
+            self.status_label.setStyleSheet("background-color: #1b5e20; color: #fff; padding: 5px; border-radius: 3px; font-weight: bold;")
+        else:
+            self.status_label.setText("🔴 Desconectado (API Key no config)")
+            self.status_label.setStyleSheet("background-color: #b71c1c; color: #fff; padding: 5px; border-radius: 3px; font-weight: bold;")
+
+class SortableTableWidgetItem(QTableWidgetItem):
+    def __lt__(self, other):
+        try:
+            # Clean up common non-numeric chars
+            t1 = self.text().replace('%', '').replace('$', '')
+            t2 = other.text().replace('%', '').replace('$', '')
+            return float(t1) < float(t2)
+        except ValueError:
+            return super().__lt__(other)

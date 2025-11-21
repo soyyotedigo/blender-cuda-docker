@@ -21,11 +21,14 @@ class VastWorker(QThread):
             self.search_offers()
         elif self.mode == 'rent':
             self.rent_instance()
+        elif self.mode == 'check_connection':
+            self.check_connection_status()
 
     def check_vast_installed(self):
         """Verifica si vastai está en el PATH"""
         try:
-            subprocess.check_call(["vastai", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # shell=True es necesario en Windows si vastai es un .bat/.cmd
+            subprocess.check_call(["vastai", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
@@ -69,11 +72,13 @@ class VastWorker(QThread):
 
         # Ejecución Real
         try:
-            cmd = ["vastai", "search", "offers", query, "--raw"]
-            result = subprocess.check_output(cmd).decode('utf-8')
+            # shell=True para Windows
+            cmd = f"vastai search offers \"{query}\" --raw"
+            self.log_message.emit(f"[*] Ejecutando: {cmd}")
+            result = subprocess.check_output(cmd, shell=True).decode('utf-8')
             data = json.loads(result)
             self.data_ready.emit(data)
-            self.log_message.emit(f"[+] Búsqueda completada. {len(data)} máquinas encontradas.")
+            self.log_message.emit(f"[+] Búsqueda completada (DATOS REALES). {len(data)} máquinas encontradas.")
         except Exception as e:
             self.error_occurred.emit(f"Error ejecutando vastai search: {str(e)}")
 
@@ -94,14 +99,23 @@ class VastWorker(QThread):
 
         # Ejecución Real
         try:
-            # Comando: vastai create instance <id> --image <image> --disk <disk> --onstart <cmd>
-            cmd = ["vastai", "create", "instance", str(instance_id), "--image", image, "--disk", str(disk)]
+            # Comando: vastai create instance <id> --image <image> --disk <disk> --onstart <cmd> --env <env>
+            # Usamos string command con shell=True para evitar problemas de parsing de argumentos en Windows
+            cmd_str = f"vastai create instance {instance_id} --image {image} --disk {disk}"
             
-            if onstart:
-                # Nota: pasar scripts complejos por CLI puede ser delicado con las comillas
-                cmd.extend(["--onstart", onstart])
+            env_vars = self.kwargs.get('env')
+            if env_vars:
+                # Asumimos que el usuario ya pone las comillas si son necesarias, o lo envolvemos
+                # El usuario dijo: --env "-e VAR=VAL ..."
+                # Si el usuario escribe: -e VAR=VAL
+                # Nosotros deberíamos poner: --env "-e VAR=VAL"
+                cmd_str += f" --env \"{env_vars}\""
 
-            result = subprocess.check_output(cmd).decode('utf-8')
+            if onstart:
+                cmd_str += f" --onstart \"{onstart}\""
+
+            self.log_message.emit(f"[*] Ejecutando: {cmd_str}")
+            result = subprocess.check_output(cmd_str, shell=True).decode('utf-8')
             
             if "success" in result.lower() or "id" in result.lower():
                 self.log_message.emit(f"[+] Instancia creada. Respuesta: {result}")
@@ -111,3 +125,25 @@ class VastWorker(QThread):
                 
         except Exception as e:
             self.error_occurred.emit(f"Error al alquilar: {str(e)}")
+
+    def check_connection_status(self):
+        if not self.check_vast_installed():
+            self.finished_action.emit("CONNECTION_FAILED")
+            return
+
+        try:
+            # vastai show user --raw devuelve JSON con info del usuario
+            cmd = "vastai show user --raw"
+            result = subprocess.check_output(cmd, shell=True).decode('utf-8')
+            data = json.loads(result)
+            
+            # Si hay un email, asumimos éxito
+            if "email" in data:
+                email = data.get("email", "Unknown")
+                balance = data.get("credit", 0.0)
+                self.finished_action.emit(f"CONNECTED:{email}:{balance}")
+            else:
+                self.finished_action.emit("CONNECTION_FAILED")
+        except Exception as e:
+            self.log_message.emit(f"Error verificando conexión: {str(e)}")
+            self.finished_action.emit("CONNECTION_FAILED")
