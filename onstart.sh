@@ -36,6 +36,6 @@ mkdir -p "$LOCAL_OUTPUT_DIR"
   -s "$START_FRAME" -e "$END_FRAME" -a
 
 echo "[INFO] Render terminado. Subiendo a Drive..."
-rclone copy "$LOCAL_OUTPUT_DIR" "$OUTPUT_REMOTE" -P
+rclone copy "$LOCAL_OUTPUT_DIR" "$OUTPUT_REMOTE" -P --drive-team-drive=0ANBdOnuvcZHsUk9PVA
 
 echo "[INFO] Listo. Archivos en $OUTPUT_REMOTE"
