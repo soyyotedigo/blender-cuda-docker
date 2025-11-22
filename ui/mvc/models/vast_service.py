@@ -55,11 +55,40 @@ class VastWorker(QThread):
         gpu_name = self.kwargs.get('gpu_name', '')
         max_price = self.kwargs.get('max_price', 10.0)
         disk_space = self.kwargs.get('disk_space', 10)
+        region = self.kwargs.get('region', '')
+        cuda_vers = self.kwargs.get('cuda_vers', '')
 
         # Construir query para vastai
-        query = f"dph < {max_price} verified=true disk_space > {disk_space}"
+        # reliability>0.99 cuda_vers>=12.1 num_gpus>=1 gpu_name in ["RTX_4090", "RTX_3090" "RTX_5090"] geolocation in [US,CA] driver_version >= 560.00.00
+        
+        query_parts = [
+            f"dph < {max_price}",
+            "verified=true",
+            f"disk_space > {disk_space}",
+            "reliability > 0.99",
+            "num_gpus >= 1"
+        ]
+
         if gpu_name and gpu_name != "Cualquiera":
-            query += f" gpu_name={gpu_name}"
+            # Si es uno de los RTX, el usuario quería una lista específica
+            # Pero el combo box selecciona uno a la vez. Si selecciona uno, filtramos por ese.
+            # Si el usuario quiere la lista exacta que pidió:
+            # gpu_name in ["RTX_4090", "RTX_3090", "RTX_5090"]
+            # Podemos implementar lógica especial si selecciona "RTX 4090" o similar, o dejarlo simple.
+            # Vamos a usar el valor del combo.
+            query_parts.append(f"gpu_name = {gpu_name.replace(' ', '_')}")
+
+        if region:
+            # geolocation in [US,CA]
+            query_parts.append(f"geolocation in [{region}]")
+        
+        if cuda_vers:
+            query_parts.append(f"cuda_vers >= {cuda_vers}")
+
+        # Hardcoded driver requirement from user request
+        query_parts.append("driver_version >= 560.00.00")
+
+        query = " ".join(query_parts)
 
         self.log_message.emit(f"[*] Buscando ofertas con query: {query}")
 

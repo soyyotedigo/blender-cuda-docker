@@ -11,7 +11,7 @@ from .styles import DARK_STYLESHEET
 
 class VastGui(QMainWindow):
     # Signals to Controller
-    search_requested = Signal(str, float, float) # gpu, price, disk
+    search_requested = Signal(str, float, float, str, str) # gpu, price, disk, region, cuda
     rent_requested = Signal(list, str, float, str, str) # ids, image, disk, onstart, env
     set_api_key_requested = Signal(str)
 
@@ -49,7 +49,8 @@ class VastGui(QMainWindow):
         filter_layout = QFormLayout()
 
         self.gpu_combo = QComboBox()
-        self.gpu_combo.addItems(["Cualquiera", "RTX 4090", "RTX 3090", "A6000", "A100", "A40", "RTX A5000"])
+        # User requested: "RTX_4090", "RTX_3090", "RTX_5090" (5090 might not exist yet in vast, but we add it)
+        self.gpu_combo.addItems(["RTX 4090", "RTX 3090", "RTX 5090", "A6000", "A100", "Cualquiera"])
         
         self.price_input = QLineEdit("2.5")
         self.price_input.setPlaceholderText("USD/Hora Máx")
@@ -57,9 +58,17 @@ class VastGui(QMainWindow):
         self.disk_input = QLineEdit("20")
         self.disk_input.setPlaceholderText("GB Espacio")
 
+        self.region_input = QLineEdit("US,CA")
+        self.region_input.setPlaceholderText("Ej: US,CA,DE")
+
+        self.cuda_input = QLineEdit("12.1")
+        self.cuda_input.setPlaceholderText("Min CUDA Vers.")
+
         filter_layout.addRow("GPU Modelo:", self.gpu_combo)
         filter_layout.addRow("Precio Máx ($/hr):", self.price_input)
         filter_layout.addRow("Espacio Disco (GB):", self.disk_input)
+        filter_layout.addRow("Región (Geo):", self.region_input)
+        filter_layout.addRow("CUDA Versión:", self.cuda_input)
 
         self.search_btn = QPushButton("Buscar Disponibles")
         self.search_btn.setIcon(QIcon.fromTheme("system-search"))
@@ -73,18 +82,27 @@ class VastGui(QMainWindow):
         render_layout = QFormLayout()
 
         self.image_input = QLineEdit("danicol/blender-render:4.5.2")
-        self.image_input.setPlaceholderText("Ej: blender/blender:latest")
-        self.image_input.setToolTip("Imagen Docker a utilizar")
-
         self.onstart_input = QLineEdit("onstart.sh")
-        self.onstart_input.setPlaceholderText("Bash script on-start")
         
-        self.args_input = QLineEdit("-e RCLONE_CONF_B64=... -e SCENE_FILE=...")
-        self.args_input.setPlaceholderText("Environment Variables (--env)")
+        # Specific Fields
+        self.scene_remote = QLineEdit("gdrive:proyectos/navidad/escena")
+        self.scene_file = QLineEdit("NAVIDAD.blend")
+        self.output_remote = QLineEdit("gdrive:renders/navidad/shot01")
+        self.start_frame = QLineEdit("1")
+        self.end_frame = QLineEdit("120")
+        self.rclone_conf = QLineEdit("TU_BASE64_ACA")
+        self.rclone_conf.setEchoMode(QLineEdit.Password) # Hide for security visually
+        self.rclone_conf.setPlaceholderText("RCLONE_CONF_B64")
 
         render_layout.addRow("Docker Image:", self.image_input)
         render_layout.addRow("On-Start Cmd:", self.onstart_input)
-        render_layout.addRow("Environment:", self.args_input)
+        render_layout.addRow("--- Parámetros Blender ---", QLabel(""))
+        render_layout.addRow("Scene Remote:", self.scene_remote)
+        render_layout.addRow("Scene File:", self.scene_file)
+        render_layout.addRow("Output Remote:", self.output_remote)
+        render_layout.addRow("Start Frame:", self.start_frame)
+        render_layout.addRow("End Frame:", self.end_frame)
+        render_layout.addRow("Rclone B64:", self.rclone_conf)
 
         self.rent_btn = QPushButton("ALQUILAR Y RENDERIZAR")
         self.rent_btn.setObjectName("rentButton")
@@ -177,7 +195,13 @@ class VastGui(QMainWindow):
         try:
             price = float(self.price_input.text())
             disk = float(self.disk_input.text())
-            self.search_requested.emit(gpu, price, disk)
+            region = self.region_input.text()
+            cuda = self.cuda_input.text()
+            
+            # Emitir diccionario o argumentos extra
+            # Para no romper la firma, pasamos un dict en el 4to argumento si es posible, 
+            # o actualizamos la señal. Vamos a actualizar la señal.
+            self.search_requested.emit(gpu, price, disk, region, cuda)
         except ValueError:
             QMessageBox.warning(self, "Error", "El precio y el disco deben ser números válidos.")
 
@@ -204,7 +228,20 @@ class VastGui(QMainWindow):
                 disk = float(self.disk_input.text())
             except: 
                 disk = 10.0
-            self.rent_requested.emit(self.selected_machine_ids, image, disk, self.onstart_input.text(), self.args_input.text())
+            
+            # Construir string de entorno
+            # -e RCLONE_CONF_B64=... -e SCENE_REMOTE=...
+            env_parts = []
+            if self.rclone_conf.text(): env_parts.append(f"-e RCLONE_CONF_B64={self.rclone_conf.text()}")
+            if self.scene_remote.text(): env_parts.append(f"-e SCENE_REMOTE={self.scene_remote.text()}")
+            if self.scene_file.text(): env_parts.append(f"-e SCENE_FILE={self.scene_file.text()}")
+            if self.output_remote.text(): env_parts.append(f"-e OUTPUT_REMOTE={self.output_remote.text()}")
+            if self.start_frame.text(): env_parts.append(f"-e START_FRAME={self.start_frame.text()}")
+            if self.end_frame.text(): env_parts.append(f"-e END_FRAME={self.end_frame.text()}")
+            
+            env_str = " ".join(env_parts)
+            
+            self.rent_requested.emit(self.selected_machine_ids, image, disk, self.onstart_input.text(), env_str)
 
     def set_loading(self, loading):
         if loading:

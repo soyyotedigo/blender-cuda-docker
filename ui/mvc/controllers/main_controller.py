@@ -31,12 +31,19 @@ class MainController(QObject):
             self.worker.wait()
         self.worker = None
 
-    def handle_search(self, gpu, price, disk):
+    def handle_search(self, gpu, price, disk, region, cuda):
         self.ensure_worker_stopped()
         self.view.set_loading(True)
         self.view.table.setRowCount(0)
         
-        self.worker = VastWorker(mode='search', gpu_name=gpu, max_price=price, disk_space=disk)
+        self.worker = VastWorker(
+            mode='search', 
+            gpu_name=gpu, 
+            max_price=price, 
+            disk_space=disk,
+            region=region,
+            cuda_vers=cuda
+        )
         self.worker.data_ready.connect(self.view.populate_table)
         self.worker.log_message.connect(self.view.append_log)
         self.worker.error_occurred.connect(lambda err: self.view.append_log(f"ERROR: {err}"))

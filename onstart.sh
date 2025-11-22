@@ -30,9 +30,10 @@ ls -la "$LOCAL_SCENE_DIR"
 
 echo "[INFO] Tirando render con Blender..."
 mkdir -p "$LOCAL_OUTPUT_DIR"
+
 /usr/local/bin/blender -b "$LOCAL_SCENE_DIR/$SCENE_FILE" \
-  -s "$START_FRAME" -e "$END_FRAME" -a \
-  -o "$LOCAL_OUTPUT_DIR/frame_####"
+  -o "$LOCAL_OUTPUT_DIR/frame_####" \
+  -s "$START_FRAME" -e "$END_FRAME" -a
 
 echo "[INFO] Render terminado. Subiendo a Drive..."
 rclone copy "$LOCAL_OUTPUT_DIR" "$OUTPUT_REMOTE" -P
