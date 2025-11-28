@@ -85,9 +85,9 @@ class VastGui(QMainWindow):
         self.onstart_input = QLineEdit("onstart.sh")
         
         # Specific Fields
-        self.scene_remote = QLineEdit("gdrive:proyectos/navidad/escena")
+        self.scene_remote = QLineEdit("drive:proyectos/navidad/escena")
         self.scene_file = QLineEdit("NAVIDAD.blend")
-        self.output_remote = QLineEdit("gdrive:renders/navidad/shot01")
+        self.output_remote = QLineEdit("drive:renders/navidad/shot01")
         self.start_frame = QLineEdit("1")
         self.end_frame = QLineEdit("120")
         self.rclone_conf = QLineEdit("TU_BASE64_ACA")
