@@ -6,6 +6,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from PySide2.QtWidgets import QApplication
 from mvc.controllers.main_controller import MainController
+from PySide2.QtWidgets import QMainWindow
 
 def main():
     app = QApplication(sys.argv)

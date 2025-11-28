@@ -3,7 +3,7 @@ from PySide2.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QTableWidget, QTableWidgetItem, QHeaderView, 
                                QComboBox, QTextEdit, QGroupBox, QFormLayout,
                                QMessageBox, QProgressBar, QAbstractItemView,
-                               QInputDialog)
+                               QInputDialog, QTabWidget, QMenu)
 from PySide2.QtCore import Signal, Qt
 from PySide2.QtGui import QIcon
 from datetime import datetime
@@ -14,6 +14,11 @@ class VastGui(QMainWindow):
     search_requested = Signal(str, float, float, str, str) # gpu, price, disk, region, cuda
     rent_requested = Signal(list, str, float, str, str) # ids, image, disk, onstart, env
     set_api_key_requested = Signal(str)
+    
+    # New Signals
+    instances_requested = Signal()
+    destroy_requested = Signal(list) # list of instance_ids
+    ssh_requested = Signal(list) # list of instance_ids
 
     def __init__(self):
         super().__init__()
@@ -28,28 +33,43 @@ class VastGui(QMainWindow):
     def init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+
+        # 0. Estado de Conexión (Global)
+        self.status_label = QLabel("Verificando conexión...")
+        self.status_label.setStyleSheet("background-color: #333; color: #aaa; padding: 5px; border-radius: 3px; font-weight: bold;")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setCursor(Qt.PointingHandCursor)
+        self.status_label.mousePressEvent = self.on_status_clicked
+        main_layout.addWidget(self.status_label)
+
+        # Tabs
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        # Tab 1: Buscar y Alquilar
+        self.search_tab = QWidget()
+        self.init_search_tab()
+        self.tabs.addTab(self.search_tab, "Buscar y Alquilar")
+
+        # Tab 2: Instancias Creadas
+        self.instances_tab = QWidget()
+        self.init_instances_tab()
+        self.tabs.addTab(self.instances_tab, "Instancias Creadas")
+
+    def init_search_tab(self):
+        layout = QHBoxLayout(self.search_tab)
 
         # === Panel Izquierdo (Controles y Logs) ===
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_panel.setFixedWidth(400)
 
-        # 0. Estado de Conexión
-        self.status_label = QLabel("Verificando conexión...")
-        self.status_label.setStyleSheet("background-color: #333; color: #aaa; padding: 5px; border-radius: 3px; font-weight: bold;")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        # Make status label clickable
-        self.status_label.setCursor(Qt.PointingHandCursor)
-        self.status_label.mousePressEvent = self.on_status_clicked
-        left_layout.addWidget(self.status_label)
-
         # 1. Filtros de Búsqueda
         filter_group = QGroupBox("1. Configuración de Búsqueda")
         filter_layout = QFormLayout()
 
         self.gpu_combo = QComboBox()
-        # User requested: "RTX_4090", "RTX_3090", "RTX_5090" (5090 might not exist yet in vast, but we add it)
         self.gpu_combo.addItems(["RTX 4090", "RTX 3090", "RTX 5090", "A6000", "A100", "Cualquiera"])
         
         self.price_input = QLineEdit("2.5")
@@ -81,17 +101,17 @@ class VastGui(QMainWindow):
         render_group = QGroupBox("3. Configuración del Render")
         render_layout = QFormLayout()
 
-        self.image_input = QLineEdit("danicol/blender-render:4.5.2")
+        self.image_input = QLineEdit("danicol/blender-render:v2")
         self.onstart_input = QLineEdit("onstart.sh")
         
         # Specific Fields
-        self.scene_remote = QLineEdit("drive:proyectos/navidad/escena")
+        self.scene_remote = QLineEdit("drive:test_RENDER")
         self.scene_file = QLineEdit("NAVIDAD.blend")
         self.output_remote = QLineEdit("drive:renders/navidad/shot01")
         self.start_frame = QLineEdit("1")
         self.end_frame = QLineEdit("120")
         self.rclone_conf = QLineEdit("TU_BASE64_ACA")
-        self.rclone_conf.setEchoMode(QLineEdit.Password) # Hide for security visually
+        self.rclone_conf.setEchoMode(QLineEdit.Password)
         self.rclone_conf.setPlaceholderText("RCLONE_CONF_B64")
 
         render_layout.addRow("Docker Image:", self.image_input)
@@ -139,7 +159,7 @@ class VastGui(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.table.setSortingEnabled(True)  # Enable sorting
+        self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
 
         right_layout.addWidget(self.result_label)
@@ -152,8 +172,67 @@ class VastGui(QMainWindow):
         right_layout.addWidget(self.progress)
 
         # Unir paneles
-        main_layout.addWidget(left_panel)
-        main_layout.addWidget(right_panel)
+        layout.addWidget(left_panel)
+        layout.addWidget(right_panel)
+
+    def init_instances_tab(self):
+        layout = QVBoxLayout(self.instances_tab)
+
+        # Toolbar
+        toolbar_layout = QHBoxLayout()
+        self.refresh_instances_btn = QPushButton("Actualizar Lista")
+        self.refresh_instances_btn.clicked.connect(lambda: self.instances_requested.emit())
+        toolbar_layout.addWidget(self.refresh_instances_btn)
+        toolbar_layout.addStretch()
+        layout.addLayout(toolbar_layout)
+
+        # Tabla de Instancias
+        self.instances_table = QTableWidget()
+        self.instances_table.setColumnCount(7)
+        self.instances_table.setHorizontalHeaderLabels(["ID", "Estado", "GPU", "Precio/Hr", "SSH Port", "Imagen", "Acciones"])
+        self.instances_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.instances_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.instances_table.setSelectionMode(QAbstractItemView.ExtendedSelection) # Allow multi-select
+        self.instances_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.instances_table.customContextMenuRequested.connect(self.show_instance_context_menu)
+        
+        layout.addWidget(self.instances_table)
+
+    def show_instance_context_menu(self, pos):
+        # Get selected items
+        selected_rows = set()
+        for item in self.instances_table.selectedItems():
+            selected_rows.add(item.row())
+        
+        if not selected_rows:
+            return
+
+        instance_ids = []
+        for row in selected_rows:
+            m_id = self.instances_table.item(row, 0).text()
+            instance_ids.append(m_id)
+        
+        count = len(instance_ids)
+        menu = QMenu(self)
+        
+        ssh_text = f"Conectar SSH ({count})" if count > 1 else "Conectar SSH"
+        kill_text = f"Destruir Instancia(s) ({count})" if count > 1 else "Destruir Instancia"
+        
+        ssh_action = menu.addAction(ssh_text)
+        kill_action = menu.addAction(kill_text)
+        
+        action = menu.exec_(self.instances_table.mapToGlobal(pos))
+        
+        if action == ssh_action:
+            self.ssh_requested.emit(instance_ids)
+        elif action == kill_action:
+            confirm = QMessageBox.question(
+                self, "Confirmar Destrucción", 
+                f"¿Estás seguro de destruir {count} instancia(s)?\nIDs: {', '.join(instance_ids)}\nSe perderán todos los datos no guardados.",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if confirm == QMessageBox.Yes:
+                self.destroy_requested.emit(instance_ids)
 
     def append_log(self, text):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -174,7 +253,6 @@ class VastGui(QMainWindow):
             
             count = len(self.selected_machine_ids)
             if count == 1:
-                # Mostrar detalle del único seleccionado
                 row = list(selected_rows)[0]
                 gpu = self.table.item(row, 1).text()
                 price = self.table.item(row, 3).text()
@@ -197,10 +275,6 @@ class VastGui(QMainWindow):
             disk = float(self.disk_input.text())
             region = self.region_input.text()
             cuda = self.cuda_input.text()
-            
-            # Emitir diccionario o argumentos extra
-            # Para no romper la firma, pasamos un dict en el 4to argumento si es posible, 
-            # o actualizamos la señal. Vamos a actualizar la señal.
             self.search_requested.emit(gpu, price, disk, region, cuda)
         except ValueError:
             QMessageBox.warning(self, "Error", "El precio y el disco deben ser números válidos.")
@@ -229,13 +303,14 @@ class VastGui(QMainWindow):
             except: 
                 disk = 10.0
             
-            # Construir string de entorno
-            # -e RCLONE_CONF_B64=... -e SCENE_REMOTE=...
+            # Construir string de entorno BASE
             env_parts = []
             if self.rclone_conf.text(): env_parts.append(f"-e RCLONE_CONF_B64={self.rclone_conf.text()}")
             if self.scene_remote.text(): env_parts.append(f"-e SCENE_REMOTE={self.scene_remote.text()}")
             if self.scene_file.text(): env_parts.append(f"-e SCENE_FILE={self.scene_file.text()}")
             if self.output_remote.text(): env_parts.append(f"-e OUTPUT_REMOTE={self.output_remote.text()}")
+            
+            # Start/End frame se manejarán en el controlador para dividir carga
             if self.start_frame.text(): env_parts.append(f"-e START_FRAME={self.start_frame.text()}")
             if self.end_frame.text(): env_parts.append(f"-e END_FRAME={self.end_frame.text()}")
             
@@ -249,7 +324,7 @@ class VastGui(QMainWindow):
             self.rent_btn.setEnabled(False)
             self.progress.setRange(0, 0)
             self.progress.show()
-            self.table.setSortingEnabled(False) # Disable sorting while updating
+            self.table.setSortingEnabled(False)
         else:
             self.search_btn.setEnabled(True)
             if self.selected_machine_ids:
@@ -258,7 +333,7 @@ class VastGui(QMainWindow):
             self.table.setSortingEnabled(True)
 
     def populate_table(self, data):
-        self.table.setSortingEnabled(False) # Disable sorting while populating
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(data))
         for row_idx, machine in enumerate(data):
             m_id = str(machine.get('id', 'N/A'))
@@ -276,6 +351,28 @@ class VastGui(QMainWindow):
             self.table.setItem(row_idx, 4, SortableTableWidgetItem(m_dlperf))
             self.table.setItem(row_idx, 5, SortableTableWidgetItem(m_rel))
         self.table.setSortingEnabled(True)
+
+    def populate_instances_table(self, data):
+        self.instances_table.setRowCount(len(data))
+        for row_idx, inst in enumerate(data):
+            # Data structure from vastai show instances --raw
+            m_id = str(inst.get('id', 'N/A'))
+            status = str(inst.get('actual_status', 'Unknown'))
+            gpu = str(inst.get('gpu_name', 'Unknown'))
+            price = f"{inst.get('dph_total', 0.0):.3f}"
+            ssh_port = str(inst.get('ssh_port', 'N/A'))
+            image = str(inst.get('image_uuid', 'N/A'))
+
+            self.instances_table.setItem(row_idx, 0, QTableWidgetItem(m_id))
+            self.instances_table.setItem(row_idx, 1, QTableWidgetItem(status))
+            self.instances_table.setItem(row_idx, 2, QTableWidgetItem(gpu))
+            self.instances_table.setItem(row_idx, 3, QTableWidgetItem(price))
+            self.instances_table.setItem(row_idx, 4, QTableWidgetItem(ssh_port))
+            self.instances_table.setItem(row_idx, 5, QTableWidgetItem(image))
+            
+            # Action button placeholder if needed, but we use context menu
+            # btn = QPushButton("SSH")
+            # self.instances_table.setCellWidget(row_idx, 6, btn)
 
     def show_success(self, message):
         QMessageBox.information(self, "Éxito", message)
@@ -299,7 +396,6 @@ class VastGui(QMainWindow):
 class SortableTableWidgetItem(QTableWidgetItem):
     def __lt__(self, other):
         try:
-            # Clean up common non-numeric chars
             t1 = self.text().replace('%', '').replace('$', '')
             t2 = other.text().replace('%', '').replace('$', '')
             return float(t1) < float(t2)

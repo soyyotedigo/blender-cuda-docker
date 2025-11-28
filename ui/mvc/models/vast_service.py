@@ -12,7 +12,7 @@ class VastWorker(QThread):
 
     def __init__(self, mode, **kwargs):
         super().__init__()
-        self.mode = mode  # 'search' o 'rent'
+        self.mode = mode  # 'search', 'rent', 'check_connection', 'set_api_key', 'show_instances', 'destroy', 'ssh_url'
         self.kwargs = kwargs
 
     def run(self):
@@ -24,6 +24,12 @@ class VastWorker(QThread):
             self.check_connection_status()
         elif self.mode == 'set_api_key':
             self.set_api_key()
+        elif self.mode == 'show_instances':
+            self.show_instances()
+        elif self.mode == 'destroy':
+            self.destroy_instance()
+        elif self.mode == 'ssh_url':
+            self.get_ssh_url()
 
     def set_api_key(self):
         api_key = self.kwargs.get('api_key')
@@ -59,8 +65,6 @@ class VastWorker(QThread):
         cuda_vers = self.kwargs.get('cuda_vers', '')
 
         # Construir query para vastai
-        # reliability>0.99 cuda_vers>=12.1 num_gpus>=1 gpu_name in ["RTX_4090", "RTX_3090" "RTX_5090"] geolocation in [US,CA] driver_version >= 560.00.00
-        
         query_parts = [
             f"dph < {max_price}",
             "verified=true",
@@ -70,16 +74,9 @@ class VastWorker(QThread):
         ]
 
         if gpu_name and gpu_name != "Cualquiera":
-            # Si es uno de los RTX, el usuario quería una lista específica
-            # Pero el combo box selecciona uno a la vez. Si selecciona uno, filtramos por ese.
-            # Si el usuario quiere la lista exacta que pidió:
-            # gpu_name in ["RTX_4090", "RTX_3090", "RTX_5090"]
-            # Podemos implementar lógica especial si selecciona "RTX 4090" o similar, o dejarlo simple.
-            # Vamos a usar el valor del combo.
             query_parts.append(f"gpu_name = {gpu_name.replace(' ', '_')}")
 
         if region:
-            # geolocation in [US,CA]
             query_parts.append(f"geolocation in [{region}]")
         
         if cuda_vers:
@@ -110,7 +107,6 @@ class VastWorker(QThread):
             self.error_occurred.emit(f"Error ejecutando vastai search: {str(e)}")
 
     def rent_instance(self):
-        # Ahora esperamos una lista de IDs
         instance_ids = self.kwargs.get('ids', [])
         if not isinstance(instance_ids, list):
              instance_ids = [instance_ids]
@@ -118,7 +114,9 @@ class VastWorker(QThread):
         image = self.kwargs.get('image')
         disk = self.kwargs.get('disk')
         onstart = self.kwargs.get('onstart')
-        env_vars = self.kwargs.get('env')
+        
+        # Ahora recibimos un diccionario {id: env_string}
+        instances_config = self.kwargs.get('instances_config', {})
 
         if not self.check_vast_installed():
             self.error_occurred.emit("Vast.ai CLI no encontrada")
@@ -128,6 +126,9 @@ class VastWorker(QThread):
         
         for instance_id in instance_ids:
             self.log_message.emit(f"[*] Intentando alquilar ID: {instance_id} con imagen: {image}...")
+            
+            # Obtener config específica para esta instancia
+            env_vars = instances_config.get(instance_id, "")
 
             try:
                 # Comando: vastai create instance <id> --image <image> --disk <disk> --onstart <cmd> --env <env>
@@ -155,6 +156,74 @@ class VastWorker(QThread):
             self.finished_action.emit(f"SUCCESS:{success_count}")
         else:
             self.finished_action.emit("FAILED")
+
+    def show_instances(self):
+        if not self.check_vast_installed():
+            self.error_occurred.emit("Vast.ai CLI no encontrada")
+            return
+
+        try:
+            cmd = "vastai show instances --raw"
+            # self.log_message.emit(f"[*] Obteniendo instancias...")
+            result = subprocess.check_output(cmd, shell=True).decode('utf-8')
+            data = json.loads(result)
+            self.data_ready.emit(data)
+            self.log_message.emit(f"[+] Lista de instancias actualizada. {len(data)} activas.")
+        except Exception as e:
+            self.error_occurred.emit(f"Error obteniendo instancias: {str(e)}")
+
+    def destroy_instance(self):
+        instance_ids = self.kwargs.get('instance_ids')
+        if not instance_ids:
+            return
+        
+        if isinstance(instance_ids, str):
+            instance_ids = [instance_ids]
+
+        success_count = 0
+        for instance_id in instance_ids:
+            try:
+                cmd = f"vastai destroy instance {instance_id}"
+                subprocess.check_call(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.log_message.emit(f"[+] Instancia {instance_id} destruida.")
+                success_count += 1
+            except Exception as e:
+                self.error_occurred.emit(f"Error destruyendo instancia {instance_id}: {str(e)}")
+        
+        if success_count > 0:
+            self.finished_action.emit(f"SUCCESS:{success_count}")
+        else:
+            self.finished_action.emit("FAILED")
+
+    def get_ssh_url(self):
+        instance_ids = self.kwargs.get('instance_ids')
+        if not instance_ids:
+            return
+
+        if isinstance(instance_ids, str):
+            instance_ids = [instance_ids]
+
+        for instance_id in instance_ids:
+            try:
+                # vastai ssh-url <id>
+                cmd = f"vastai ssh-url {instance_id}"
+                url = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
+                
+                if url.startswith("ssh://"):
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(url)
+                    username = parsed.username
+                    hostname = parsed.hostname
+                    port = parsed.port
+                    
+                    ssh_cmd = f"ssh {username}@{hostname} -p {port}"
+                    # Emitimos uno por uno para que el controlador abra las ventanas
+                    self.finished_action.emit(f"SSH_CMD:{ssh_cmd}")
+                else:
+                    self.log_message.emit(f"[-] Invalid URL for {instance_id}: {url}")
+                    
+            except Exception as e:
+                self.error_occurred.emit(f"Error obteniendo SSH URL para {instance_id}: {str(e)}")
 
     def check_connection_status(self):
         if not self.check_vast_installed():
